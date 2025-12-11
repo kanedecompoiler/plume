@@ -582,7 +582,8 @@ namespace plume {
                 assert(sampleCount <= 1 && "Multisampling not supported for 3D textures");
                 return MTL::TextureType3D;
             case RenderTextureViewDimension::TEXTURE_CUBE:
-                return MTL::TextureTypeCube;
+                assert(sampleCount <= 1 && "Multisampling not supported for cube textures");
+                return (arraySize > 6) ? MTL::TextureTypeCubeArray : MTL::TextureTypeCube;
             default:
                 assert(false && "Unknown resource dimension.");
                 return MTL::TextureType2D;
@@ -2694,6 +2695,7 @@ namespace plume {
         dynamicDepthBias.depthBias = depthBias;
         dynamicDepthBias.depthBiasClamp = depthBiasClamp;
         dynamicDepthBias.slopeScaledDepthBias = slopeScaledDepthBias;
+        dirtyGraphicsState.depthBias = 1;
     }
 
     void MetalCommandList::setCommonClearState() const {
