@@ -1659,8 +1659,7 @@ namespace plume {
             descriptor->release();
         }
 
-        uint64_t requiredSize = setLayout->argumentEncoder->encodedLength();
-        requiredSize = alignUp(requiredSize, 256);
+        uint64_t requiredSize = alignUp(setLayout->argumentEncoder->encodedLength(), 256);
 
         argumentBuffer = {
             .mtl = device->mtl->newBuffer(requiredSize, MTL::ResourceStorageModeShared),
@@ -1668,9 +1667,11 @@ namespace plume {
             .offset = 0,
         };
 
-        argumentBuffer.argumentEncoder->setArgumentBuffer(argumentBuffer.mtl, argumentBuffer.offset);
-        bindImmutableSamplers();
+        if (!device->useArgumentBuffersTier2) {
+            argumentBuffer.argumentEncoder->setArgumentBuffer(argumentBuffer.mtl, argumentBuffer.offset);
+        }
 
+        bindImmutableSamplers();
         resourceEntries.resize(maxResources);
     }
 
@@ -1692,9 +1693,21 @@ namespace plume {
     }
 
     void MetalDescriptorSet::bindImmutableSamplers() const {
-        for (auto &binding: setLayout->setBindings) {
+        // For Tier 2, get pointer to argument buffer for direct writes
+        uint8_t *bufferPtr = nullptr;
+        if (device->useArgumentBuffersTier2) {
+            bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
+        }
+
+        for (const auto &binding : setLayout->setBindings) {
             for (uint32_t i = 0; i < binding.immutableSamplers.size(); i++) {
-                argumentBuffer.argumentEncoder->setSamplerState(binding.immutableSamplers[i], binding.binding + i);
+                uint32_t argumentIndex = binding.binding + i;
+                if (device->useArgumentBuffersTier2) {
+                    uint32_t offset = argumentIndex * sizeof(uint64_t);
+                    *reinterpret_cast<MTL::ResourceID*>(bufferPtr + offset) = binding.immutableSamplers[i]->gpuResourceID();
+                } else {
+                    argumentBuffer.argumentEncoder->setSamplerState(binding.immutableSamplers[i], argumentIndex);
+                }
             }
         }
     }
@@ -1794,6 +1807,15 @@ namespace plume {
         }
 
         if (descriptor != nullptr) {
+            const uint32_t argumentIndex = descriptorIndex - indexBase + bindingIndex;
+            const uint32_t argumentOffset = argumentIndex * sizeof(uint64_t);
+
+            // For Tier 2, get pointer to argument buffer for direct writes
+            uint8_t *bufferPtr = nullptr;
+            if (device->useArgumentBuffersTier2) {
+                bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
+            }
+
             switch (dtype) {
                 case MTL::DataTypeTexture: {
                     const TextureDescriptor *textureDescriptor = static_cast<const TextureDescriptor *>(descriptor);
@@ -1804,7 +1826,11 @@ namespace plume {
                         residencySet->addAllocation(nativeTexture);
                         needsCommit = true;
                     }
-                    argumentBuffer.argumentEncoder->setTexture(nativeTexture, descriptorIndex - indexBase + bindingIndex);
+                    if (device->useArgumentBuffersTier2) {
+                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + argumentOffset) = nativeTexture->gpuResourceID();
+                    } else {
+                        argumentBuffer.argumentEncoder->setTexture(nativeTexture, argumentIndex);
+                    }
                     nativeTexture->retain();
                     break;
                 }
@@ -1817,13 +1843,22 @@ namespace plume {
                         residencySet->addAllocation(nativeBuffer);
                         needsCommit = true;
                     }
-                    argumentBuffer.argumentEncoder->setBuffer(nativeBuffer, bufferDescriptor->offset, descriptorIndex - indexBase + bindingIndex);
+                    if (device->useDirectBufferAddresses) {
+                        uint64_t gpuAddress = nativeBuffer->gpuAddress() + bufferDescriptor->offset;
+                        *reinterpret_cast<uint64_t*>(bufferPtr + argumentOffset) = gpuAddress;
+                    } else {
+                        argumentBuffer.argumentEncoder->setBuffer(nativeBuffer, bufferDescriptor->offset, argumentIndex);
+                    }
                     nativeBuffer->retain();
                     break;
                 }
                 case MTL::DataTypeSampler: {
                     const SamplerDescriptor *samplerDescriptor = static_cast<const SamplerDescriptor *>(descriptor);
-                    argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, descriptorIndex - indexBase + bindingIndex);
+                    if (device->useArgumentBuffersTier2) {
+                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + argumentOffset) = samplerDescriptor->state->gpuResourceID();
+                    } else {
+                        argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, argumentIndex);
+                    }
                     break;
                 }
 
@@ -2710,7 +2745,7 @@ namespace plume {
         if (!pendingClears.active) {
             return;
         }
-        
+
         checkActiveRenderEncoder();
         endActiveRenderEncoder();
     }
@@ -2719,7 +2754,7 @@ namespace plume {
         assert(targetFramebuffer != nullptr);
         assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
         assert((!clearRects || clearRectsCount <= MAX_CLEAR_RECTS) && "Too many clear rects");
-        
+
         // For full framebuffer clears, use the more efficient load action clear
         if (clearRectsCount == 0) {
             pendingClears.initialAction[attachmentIndex] = MTL::LoadActionClear;
@@ -2816,17 +2851,17 @@ namespace plume {
             // For full framebuffer clears, use the more efficient load action clear
             if (clearRectsCount == 0) {
                 const size_t depthIndex = targetFramebuffer->colorAttachments.size();
-                
+
                 if (clearDepth) {
                     pendingClears.initialAction[depthIndex] = MTL::LoadActionClear;
                     pendingClears.clearValues[depthIndex].depth = depthValue;
                 }
-                
+
                 if (clearStencil) {
                     pendingClears.initialAction[depthIndex + 1] = MTL::LoadActionClear;
                     pendingClears.clearValues[depthIndex + 1].stencil = stencilValue;
                 }
-                
+
                 pendingClears.active = true;
                 return;
             }
@@ -3223,7 +3258,7 @@ namespace plume {
 
         if (activeComputeEncoder == nullptr) {
             NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-            
+
             activeComputeEncoder = mtl->computeCommandEncoder(MTL::DispatchTypeConcurrent);
             activeComputeEncoder->setLabel(MTLSTR("Compute Encoder"));
 
@@ -3285,11 +3320,11 @@ namespace plume {
     void MetalCommandList::checkActiveRenderEncoder() {
         assert(targetFramebuffer != nullptr);
         endOtherEncoders(EncoderType::Render);
-        
+
         if (pendingClears.active) {
             endActiveRenderEncoder();
         }
-        
+
         activeType = EncoderType::Render;
 
         if (activeRenderEncoder == nullptr) {
@@ -3336,7 +3371,7 @@ namespace plume {
             releasePool->release();
 
             startedEncoding = true;
-            
+
             // Reset pending clears since we've now handled them
             if (pendingClears.active) {
                 for (auto& action : pendingClears.initialAction) {
@@ -3738,6 +3773,9 @@ namespace plume {
         capabilities.bufferDeviceAddress = osVersion.majorVersion >= 13 && mtl->supportsFamily(MTL::GPUFamilyApple3);
         supportsResidencySets = osVersion.majorVersion >= 15 && mtl->supportsFamily(MTL::GPUFamilyApple6);
 #endif
+
+        useArgumentBuffersTier2 = mtl->argumentBuffersSupport() == MTL::ArgumentBuffersTier2;
+        useDirectBufferAddresses = useArgumentBuffersTier2 && mtl->supportsFamily(MTL::GPUFamilyMetal3);
 
         nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
 
