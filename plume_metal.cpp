@@ -2507,7 +2507,11 @@ namespace plume {
                 currentPrimitiveType = graphicsPipeline->state.primitiveType;
                 if (activeRenderState != &graphicsPipeline->state) {
                     activeRenderState = &graphicsPipeline->state;
+                    // Mark all pipeline-related state as dirty since they come from the pipeline
                     dirtyGraphicsState.pipelineState = 1;
+                    dirtyGraphicsState.depthStencil = 1;
+                    dirtyGraphicsState.rasterizer = 1;
+                    dirtyGraphicsState.depthBias = 1;
                 }
                 break;
             }
@@ -3270,29 +3274,36 @@ namespace plume {
             barrierWait(MetalBarrierStage::COMPUTE, activeComputeEncoder);
 
             dirtyComputeState.setAll();
+            stateCache.lastComputePipelineState = nullptr;
         }
 
+        // Pipeline state
         if (dirtyComputeState.pipelineState) {
-            activeComputeEncoder->setComputePipelineState(activeComputeState->pipelineState);
+            if (activeComputeState && activeComputeState->pipelineState != stateCache.lastComputePipelineState) {
+                activeComputeEncoder->setComputePipelineState(activeComputeState->pipelineState);
+                stateCache.lastComputePipelineState = activeComputeState->pipelineState;
+            }
             dirtyComputeState.pipelineState = 0;
         }
 
+        // Commit descriptor sets
         for (auto* descriptorSet : computeDescriptorSets) {
             if (descriptorSet) {
                 descriptorSet->commit();
             }
         }
 
+        // Descriptor sets
         if (dirtyComputeState.descriptorSets) {
             activeComputePipelineLayout->bindDescriptorSets(activeComputeEncoder, computeDescriptorSets, MAX_DESCRIPTOR_SET_BINDINGS, true, dirtyComputeState.descriptorSetDirtyIndex, currentEncoderDescriptorSets, mtl);
             dirtyComputeState.descriptorSets = 0;
             dirtyComputeState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
         }
 
+        // Push constants
         if (dirtyComputeState.pushConstants) {
             for (const PushConstantData &pushConstant : pushConstants) {
                 if (pushConstant.stageFlags & RenderShaderStageFlag::COMPUTE) {
-                    // Bind right after the descriptor sets, up till the max push constant index
                     const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
                     activeComputeEncoder->setBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
                 }
@@ -3383,46 +3394,93 @@ namespace plume {
     }
 
     void MetalCommandList::checkForUpdatesInGraphicsState() {
+        // Pipeline state - only update if the actual pipeline object changed
         if (dirtyGraphicsState.pipelineState) {
-            if (activeRenderState) {
+            if (activeRenderState && activeRenderState->renderPipelineState != stateCache.lastPipelineState) {
                 activeRenderEncoder->setRenderPipelineState(activeRenderState->renderPipelineState);
-                activeRenderEncoder->setDepthStencilState(activeRenderState->depthStencilState);
-                activeRenderEncoder->setDepthClipMode(activeRenderState->depthClipMode);
-                activeRenderEncoder->setCullMode(activeRenderState->cullMode);
-                activeRenderEncoder->setFrontFacingWinding(activeRenderState->winding);
-                activeRenderEncoder->setStencilReferenceValue(activeRenderState->stencilReference);
                 stateCache.lastPipelineState = activeRenderState->renderPipelineState;
             }
             dirtyGraphicsState.pipelineState = 0;
         }
 
-        if (dirtyGraphicsState.viewports) {
-            if (viewportVector.empty()) return;
-
-            activeRenderEncoder->setViewports(viewportVector.data(), viewportVector.size());
-            stateCache.lastViewports = viewportVector;
-            dirtyGraphicsState.viewports = 0;
+        // Depth/stencil state
+        if (dirtyGraphicsState.depthStencil) {
+            if (activeRenderState) {
+                if (activeRenderState->depthStencilState != stateCache.lastDepthStencilState) {
+                    activeRenderEncoder->setDepthStencilState(activeRenderState->depthStencilState);
+                    stateCache.lastDepthStencilState = activeRenderState->depthStencilState;
+                }
+                if (activeRenderState->stencilReference != stateCache.lastStencilReference) {
+                    activeRenderEncoder->setStencilReferenceValue(activeRenderState->stencilReference);
+                    stateCache.lastStencilReference = activeRenderState->stencilReference;
+                }
+            }
+            dirtyGraphicsState.depthStencil = 0;
         }
 
+        // Rasterizer state - cull mode, winding, depth clip
+        if (dirtyGraphicsState.rasterizer) {
+            if (activeRenderState) {
+                if (activeRenderState->cullMode != stateCache.lastCullMode) {
+                    activeRenderEncoder->setCullMode(activeRenderState->cullMode);
+                    stateCache.lastCullMode = activeRenderState->cullMode;
+                }
+                if (activeRenderState->winding != stateCache.lastWinding) {
+                    activeRenderEncoder->setFrontFacingWinding(activeRenderState->winding);
+                    stateCache.lastWinding = activeRenderState->winding;
+                }
+                if (activeRenderState->depthClipMode != stateCache.lastDepthClipMode) {
+                    activeRenderEncoder->setDepthClipMode(activeRenderState->depthClipMode);
+                    stateCache.lastDepthClipMode = activeRenderState->depthClipMode;
+                }
+            }
+            dirtyGraphicsState.rasterizer = 0;
+        }
+
+        // Depth bias
         if (dirtyGraphicsState.depthBias) {
+            float newDepthBias, newSlopeScale, newClamp;
             if (activeRenderState->dynamicDepthBiasEnabled) {
-                activeRenderEncoder->setDepthBias(dynamicDepthBias.depthBias, dynamicDepthBias.slopeScaledDepthBias, dynamicDepthBias.depthBiasClamp);
+                newDepthBias = dynamicDepthBias.depthBias;
+                newSlopeScale = dynamicDepthBias.slopeScaledDepthBias;
+                newClamp = dynamicDepthBias.depthBiasClamp;
             } else {
-                activeRenderEncoder->setDepthBias(activeRenderState->depthBiasConstantFactor, activeRenderState->depthBiasSlopeFactor, activeRenderState->depthBiasClamp);
+                newDepthBias = activeRenderState->depthBiasConstantFactor;
+                newSlopeScale = activeRenderState->depthBiasSlopeFactor;
+                newClamp = activeRenderState->depthBiasClamp;
             }
 
+            if (newDepthBias != stateCache.lastDepthBias ||
+                newSlopeScale != stateCache.lastSlopeScaledDepthBias ||
+                newClamp != stateCache.lastDepthBiasClamp) {
+                activeRenderEncoder->setDepthBias(newDepthBias, newSlopeScale, newClamp);
+                stateCache.lastDepthBias = newDepthBias;
+                stateCache.lastSlopeScaledDepthBias = newSlopeScale;
+                stateCache.lastDepthBiasClamp = newClamp;
+            }
             dirtyGraphicsState.depthBias = 0;
         }
 
-        if (dirtyGraphicsState.scissors) {
-            if (scissorVector.empty()) return;
+        // Viewports
+        if (dirtyGraphicsState.viewports) {
+            if (!viewportVector.empty() && viewportVector != stateCache.lastViewports) {
+                activeRenderEncoder->setViewports(viewportVector.data(), viewportVector.size());
+                stateCache.lastViewports = viewportVector;
+            }
+            dirtyGraphicsState.viewports = 0;
+        }
 
-            activeRenderEncoder->setScissorRects(scissorVector.data(), scissorVector.size());
-            stateCache.lastScissors = scissorVector;
+        // Scissors
+        if (dirtyGraphicsState.scissors) {
+            if (!scissorVector.empty() && scissorVector != stateCache.lastScissors) {
+                activeRenderEncoder->setScissorRects(scissorVector.data(), scissorVector.size());
+                stateCache.lastScissors = scissorVector;
+            }
             dirtyGraphicsState.scissors = 0;
         }
 
-        if (dirtyGraphicsState.vertexBufferSlots) {
+        // Vertex buffers - use bitmask for per-slot tracking
+        if (dirtyGraphicsState.vertexBufferSlots != 0) {
             uint32_t vertexBufferSlots = dirtyGraphicsState.vertexBufferSlots;
             while (vertexBufferSlots > 0) {
                 const uint32_t i = __builtin_ctzll(vertexBufferSlots);
@@ -3432,33 +3490,36 @@ namespace plume {
             dirtyGraphicsState.vertexBufferSlots = 0;
         }
 
+        // Commit descriptor sets
         for (auto* descriptorSet : renderDescriptorSets) {
             if (descriptorSet) {
                 descriptorSet->commit();
             }
         }
 
+        // Descriptor sets
         if (dirtyGraphicsState.descriptorSets) {
             if (activeGraphicsPipelineLayout) {
                 activeGraphicsPipelineLayout->bindDescriptorSets(activeRenderEncoder, renderDescriptorSets, MAX_DESCRIPTOR_SET_BINDINGS, false, dirtyGraphicsState.descriptorSetDirtyIndex, currentEncoderDescriptorSets, mtl);
             }
             dirtyGraphicsState.descriptorSets = 0;
-            dirtyGraphicsState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS + 1;
+            dirtyGraphicsState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
         }
 
+        // Push constants
         if (dirtyGraphicsState.pushConstants) {
-            for (const PushConstantData &pushConstant : pushConstants) {
-                // Bind right after the descriptor sets, up till the max push constant index
-                const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
-                if (pushConstant.stageFlags & RenderShaderStageFlag::VERTEX) {
-                    activeRenderEncoder->setVertexBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
+            if (pushConstants != stateCache.lastPushConstants) {
+                for (const PushConstantData &pushConstant : pushConstants) {
+                    const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
+                    if (pushConstant.stageFlags & RenderShaderStageFlag::VERTEX) {
+                        activeRenderEncoder->setVertexBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
+                    }
+                    if (pushConstant.stageFlags & RenderShaderStageFlag::PIXEL) {
+                        activeRenderEncoder->setFragmentBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
+                    }
                 }
-                if (pushConstant.stageFlags & RenderShaderStageFlag::PIXEL) {
-                    activeRenderEncoder->setFragmentBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
-                }
+                stateCache.lastPushConstants = pushConstants;
             }
-
-            stateCache.lastPushConstants = pushConstants;
             dirtyGraphicsState.pushConstants = 0;
         }
     }
@@ -3477,10 +3538,7 @@ namespace plume {
             dirtyGraphicsState.setAll();
 
             // Clear state cache since we'll need to rebind everything
-            stateCache.lastPipelineState = nullptr;
-            stateCache.lastViewports.clear();
-            stateCache.lastScissors.clear();
-            stateCache.lastPushConstants.clear();
+            stateCache.reset();
         }
     }
 

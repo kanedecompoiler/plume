@@ -88,46 +88,48 @@ namespace plume {
     };
 
     struct ComputeStateFlags {
-        uint32_t pipelineState : 1;
-        uint32_t descriptorSets : 1;
-        uint32_t pushConstants : 1;
+        union {
+            struct {
+                uint32_t pipelineState : 1;
+                uint32_t descriptorSets : 1;
+                uint32_t pushConstants : 1;
+            };
+            uint32_t value;
+        };
 
-        // marks from which descriptor set we'll invalidate from
-        uint32_t descriptorSetDirtyIndex : 5;
+        // Marks from which descriptor set we'll invalidate from
+        uint32_t descriptorSetDirtyIndex;
 
         void setAll() {
-            pipelineState = 1;
-            descriptorSets = 1;
-            pushConstants = 1;
-
+            value = 0x7; // All 3 bits set
             descriptorSetDirtyIndex = 0;
         }
     };
 
     struct GraphicsStateFlags {
-        uint32_t pipelineState : 1;
-        uint32_t descriptorSets : 1;
-        uint32_t pushConstants : 1;
-        uint32_t viewports : 1;
-        uint32_t scissors : 1;
-        uint32_t indexBuffer : 1;
-        uint32_t depthBias : 1;
+        union {
+            struct {
+                uint32_t pipelineState : 1;
+                uint32_t descriptorSets : 1;
+                uint32_t pushConstants : 1;
+                uint32_t viewports : 1;
+                uint32_t scissors : 1;
+                uint32_t indexBuffer : 1;
+                uint32_t depthBias : 1;
+                uint32_t depthStencil : 1;
+                uint32_t rasterizer : 1;
+            };
+            uint32_t value;
+        };
 
-        // marks from which descriptor set we'll invalidate from
-        uint32_t descriptorSetDirtyIndex : 5;
+        // Marks from which descriptor set we'll invalidate from
+        uint32_t descriptorSetDirtyIndex;
 
-        // Specific dirty vertex buffer slots
-        uint32_t vertexBufferSlots : 19;
+        // Specific dirty vertex buffer slots (bitmask)
+        uint32_t vertexBufferSlots;
 
         void setAll() {
-            pipelineState = 1;
-            descriptorSets = 1;
-            pushConstants = 1;
-            viewports = 1;
-            scissors = 1;
-            indexBuffer = 1;
-            depthBias = 1;
-
+            value = 0x1FF; // All 9 bits set
             descriptorSetDirtyIndex = 0;
             vertexBufferSlots = (1U << MAX_VERTEX_BUFFER_BINDINGS) - 1;
         }
@@ -369,11 +371,48 @@ namespace plume {
             bool active = false;
         } pendingClears;
 
-        struct {
+        // State cache to track last-bound values and avoid redundant encoder calls
+        struct StateCache {
+            // Pipeline state
             MTL::RenderPipelineState* lastPipelineState = nullptr;
+            MTL::ComputePipelineState* lastComputePipelineState = nullptr;
+
+            // Depth/stencil state
+            MTL::DepthStencilState* lastDepthStencilState = nullptr;
+            uint32_t lastStencilReference = 0;
+
+            // Rasterizer state
+            MTL::CullMode lastCullMode = MTL::CullModeNone;
+            MTL::Winding lastWinding = MTL::WindingClockwise;
+            MTL::DepthClipMode lastDepthClipMode = MTL::DepthClipModeClip;
+
+            // Depth bias
+            float lastDepthBias = 0.0f;
+            float lastDepthBiasClamp = 0.0f;
+            float lastSlopeScaledDepthBias = 0.0f;
+
+            // Viewport/scissor
             std::vector<MTL::Viewport> lastViewports;
             std::vector<MTL::ScissorRect> lastScissors;
+
+            // Push constants
             std::vector<PushConstantData> lastPushConstants;
+
+            void reset() {
+                lastPipelineState = nullptr;
+                lastComputePipelineState = nullptr;
+                lastDepthStencilState = nullptr;
+                lastStencilReference = 0;
+                lastCullMode = MTL::CullModeNone;
+                lastWinding = MTL::WindingClockwise;
+                lastDepthClipMode = MTL::DepthClipModeClip;
+                lastDepthBias = 0.0f;
+                lastDepthBiasClamp = 0.0f;
+                lastSlopeScaledDepthBias = 0.0f;
+                lastViewports.clear();
+                lastScissors.clear();
+                lastPushConstants.clear();
+            }
         } stateCache;
 
         MTL::PrimitiveType currentPrimitiveType = MTL::PrimitiveTypeTriangle;
