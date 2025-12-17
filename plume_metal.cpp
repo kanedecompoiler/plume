@@ -2032,6 +2032,7 @@ namespace plume {
     }
 
     RenderTexture *MetalSwapChain::getTexture(const uint32_t textureIndex) {
+        assert(textureIndex < drawables.size());
         return &drawables[textureIndex];
     }
 
@@ -2402,7 +2403,7 @@ namespace plume {
 
         for (int i = 0; i < textureBarriersCount; i++) {
             const RenderTextureBarrier &textureBarrier = textureBarriers[i];
-            MetalTexture *interfaceTexture = static_cast<MetalTexture *>(textureBarrier.texture);
+            ExtendedRenderTexture *interfaceTexture = static_cast<ExtendedRenderTexture *>(textureBarrier.texture);
 
             srcStageMask |= toStageMask(interfaceTexture->barrierStages);
             interfaceTexture->barrierStages = stages;
@@ -2554,7 +2555,7 @@ namespace plume {
         assert(range.binding < MAX_PUSH_CONSTANT_BINDINGS && "Push constants out of range");
 
         pushConstants.resize(activeComputePipelineLayout->pushConstantRanges.size());
-        pushConstants[rangeIndex].data.resize(range.size);
+        pushConstants[rangeIndex].data.resize(alignUp(range.size));
         memcpy(pushConstants[rangeIndex].data.data() + offset, data, size == 0 ? range.size : size);
         pushConstants[rangeIndex].binding = range.binding;
         pushConstants[rangeIndex].set = range.set;
@@ -2608,7 +2609,7 @@ namespace plume {
         assert(range.binding < MAX_PUSH_CONSTANT_BINDINGS && "Push constants out of range");
 
         pushConstants.resize(activeGraphicsPipelineLayout->pushConstantRanges.size());
-        pushConstants[rangeIndex].data.resize(range.size);
+        pushConstants[rangeIndex].data.resize(alignUp(range.size));
         memcpy(pushConstants[rangeIndex].data.data() + offset, data, size == 0 ? range.size : size);
         pushConstants[rangeIndex].binding = range.binding;
         pushConstants[rangeIndex].set = range.set;

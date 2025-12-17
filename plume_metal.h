@@ -201,6 +201,7 @@ namespace plume {
 
     struct ExtendedRenderTexture : RenderTexture {
         RenderTextureDesc desc;
+        RenderBarrierStages barrierStages = RenderBarrierStage::NONE;
         virtual MTL::Texture* getTexture() const = 0;
     };
 
@@ -596,7 +597,6 @@ namespace plume {
         RenderTextureLayout layout = RenderTextureLayout::UNKNOWN;
         MetalPool *pool = nullptr;
         MTL::Drawable *drawable = nullptr;
-        RenderBarrierStages barrierStages = RenderBarrierStage::NONE;
 
         MetalTexture() = default;
         MetalTexture(const MetalDevice *device, MetalPool *pool, const RenderTextureDesc &desc);
