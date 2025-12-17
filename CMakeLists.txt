@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    # 10.15 because of our use of supportsFamily()
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS deployment target")
+endif()
+
 project(plume)
 
 if(APPLE)
@@ -94,7 +100,7 @@ if(PLUME_D3D12_AGILITY_SDK_ENABLED)
     target_link_libraries(plume PRIVATE Microsoft::DirectX-Headers Microsoft::DirectX-Guids Microsoft::DirectX12-Agility)
 endif()
 
-# Platform-specific includes
+# Platform-specific includes and shader compilation
 if(APPLE)
     if(PLUME_APPLE_RETINA_ENABLED)
         target_compile_definitions(plume PRIVATE PLUME_APPLE_RETINA_ENABLED)
@@ -103,9 +109,13 @@ if(APPLE)
     target_include_directories(plume PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/metal-cpp
     )
+
+    # Compile and embed internal Metal shaders
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PlumeInternalShaders.cmake)
+    plume_compile_metal_shaders(plume)
 endif()
 
 # Add examples if requested
 if(PLUME_BUILD_EXAMPLES)
     add_subdirectory(examples)
-endif() 
+endif()
