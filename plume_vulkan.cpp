@@ -4413,6 +4413,8 @@ namespace plume {
     }
 
     void VulkanDevice::release() {
+        nullBuffer = nullptr; // force destruction before destroying allocator
+
         if (allocator != VK_NULL_HANDLE) {
             vmaDestroyAllocator(allocator);
             allocator = VK_NULL_HANDLE;
