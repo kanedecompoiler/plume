@@ -109,14 +109,6 @@ if(APPLE)
     target_include_directories(plume PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/metal-cpp
     )
-
-    # Compile and embed internal Metal shaders
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PlumeShaders.cmake)
-    plume_build_file_to_c()
-    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
-
-    _plume_compile_metal_impl(plume "${CMAKE_CURRENT_SOURCE_DIR}/shaders/plume_clear.metal" plume_clear)
-    _plume_compile_metal_impl(plume "${CMAKE_CURRENT_SOURCE_DIR}/shaders/plume_resolve.metal" plume_resolve)
 endif()
 
 # Add examples if requested
