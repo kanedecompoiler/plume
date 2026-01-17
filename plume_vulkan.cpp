@@ -2403,9 +2403,9 @@ namespace plume {
         if (immediatePresentModeSupported && !vsyncEnabled) {
             requiredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
         }
-        // Prefer mailbox if available and using present wait. FIFO is guaranteed to be supported.
+        // FIFO is guaranteed to be supported.
         else {
-            requiredPresentMode = (desc.enablePresentWait && mailboxPresentModeSupported) ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
+            requiredPresentMode = VK_PRESENT_MODE_FIFO_KHR;
         }
     }
 
